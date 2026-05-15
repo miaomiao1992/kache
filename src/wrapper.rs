@@ -183,9 +183,15 @@ pub fn run(config: &Config, wrapper_args: &[String]) -> Result<i32> {
 
     let crate_name = args.crate_name.as_deref().unwrap_or("unknown");
 
-    // Check if caching should be skipped for this crate type
-    if args.is_executable_output() && !config.cache_executables {
-        tracing::debug!("skipping cache for executable output: {}", crate_name);
+    // Skip-cache only for *user-facing* executables (`bin` / `--test`).
+    // dylib / cdylib / proc-macro stay cacheable: they're rustc's
+    // internal artifacts, not user-shipped binaries, and verify-then-
+    // sign on restore (`PostRestoreAction::Sign`) keeps macOS dyld
+    // happy. Without this distinction, every proc-macro recompiled
+    // fresh per build, producing non-byte-identical `.dylib` output
+    // that broke downstream cache keys via `extern:` hashes.
+    if args.is_user_facing_executable() && !config.cache_executables {
+        tracing::debug!("skipping cache for user-facing executable: {}", crate_name);
         log_event(
             config,
             crate_name,
@@ -205,8 +211,19 @@ pub fn run(config: &Config, wrapper_args: &[String]) -> Result<i32> {
     // Compute the cache key
     let key_start = std::time::Instant::now();
     let file_hasher = FileHasher::new();
+    // Workspace root for normalization: derive from `--out-dir`
+    // (see `RustcArgs::workspace_root` for the rationale — cargo
+    // cd's into each transitive dep's source dir, so CWD is the
+    // wrong anchor). Falls back to CWD if --out-dir isn't set
+    // (defensive — cargo always sets it for cacheable invocations).
+    let workspace_root = args
+        .workspace_root()
+        .or_else(|| std::env::current_dir().ok());
+    let path_normalizer =
+        crate::path_normalizer::PathNormalizer::from_env(workspace_root.as_deref());
     let key_ctx = KeyCtx {
         file_hasher: &file_hasher,
+        path_normalizer: &path_normalizer,
     };
     let cache_key = match compiler.cache_key(&args, &key_ctx) {
         Ok(key) => key,

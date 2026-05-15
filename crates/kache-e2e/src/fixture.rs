@@ -89,6 +89,14 @@ pub struct PhaseAssertions {
     pub cold: Option<MetricAssertions>,
     pub warm: Option<MetricAssertions>,
     pub noop: Option<NoopAssertions>,
+    /// Relocate phase: same source built from a *different* absolute
+    /// path with the same cache. Catches the bug class where build
+    /// directory / `$HOME` / target paths leak into the cache key —
+    /// without this assertion, a path-leak bug is invisible because
+    /// every other phase rebuilds at the same path and trivially hits.
+    /// Per-fixture opt-in. Reuses [`MetricAssertions`] (same
+    /// `min_hits`, `min_hit_rate_pct`, `max_misses` etc.).
+    pub relocate: Option<MetricAssertions>,
 }
 
 /// Assertions applied against `kache report --format json` output.
@@ -106,10 +114,28 @@ pub struct MetricAssertions {
     pub max_entries_after: Option<u64>,
     /// Lower bound on `local_hits + prefetch_hits + remote_hits`.
     pub min_hits: Option<u64>,
+    /// Lower bound on `summary.misses`. Used by fixtures whose
+    /// contract is "must NOT cache-hit on relocate" — e.g.
+    /// `out-dir-runtime` where the binary embeds OUT_DIR and a
+    /// false hit would silently restore the wrong path.
+    pub min_misses: Option<u64>,
     /// Upper bound on `summary.misses`.
     pub max_misses: Option<u64>,
     /// Lower bound on `summary.hit_rate_pct`.
     pub min_hit_rate_pct: Option<f64>,
+    /// Per-crate miss-count lower bound. Map: `crate_name` →
+    /// minimum miss count for that crate in this phase.
+    ///
+    /// Aggregate `min_misses` works when the contract is "at least
+    /// N total crates miss". This field works when the contract is
+    /// "this *specific* crate must miss" — used by `out-dir-runtime`
+    /// to enforce that the env!()-as-value crate's key correctly
+    /// diverged on relocate, regardless of what other crates in
+    /// the build graph (build.rs binary, etc.) did. Without this
+    /// tighter assertion, an unrelated miss in the same phase
+    /// could mask a false hit on the OUT_DIR-using crate.
+    #[serde(default)]
+    pub min_misses_per_crate: std::collections::HashMap<String, u64>,
 }
 
 /// No-op phase assertions. The no-op phase rebuilds without cleaning;
