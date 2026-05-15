@@ -93,12 +93,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build kache (release)
-        run: cargo build --release
+      - name: Build kache + e2e harness (release)
+        run: cargo build --release -p kache && cargo build --release -p kache-e2e
         env:
           RUSTC_WRAPPER: ""
-      - name: Run e2e smoke test
-        run: bash scripts/e2e-smoke.sh ./target/release/kache
+      - name: Run e2e harness (all fixtures)
+        # Single Rust harness drives every fixture in test-projects/
+        # through cold → warm → noop, applies per-fixture assertions
+        # against `kache report --format json`, and writes a single
+        # results.json. Replaces the previous per-language bash scripts.
+        run: |
+          mkdir -p e2e-results
+          ./target/release/kache-e2e \
+            --kache ./target/release/kache \
+            --fixtures ./test-projects \
+            --out e2e-results/results.json
+      - name: Show aggregated e2e results
+        if: always()
+        run: |
+          if [ -f e2e-results/results.json ]; then
+            echo "--- e2e results.json ---"
+            cat e2e-results/results.json
+          else
+            echo "no results.json produced"
+          fi
+      - name: Upload e2e results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: e2e-results/
+          retention-days: 14
 
   # --- Windows exploratory check (non-blocking) ---
   # Surfaces remaining Windows porting work for issue #45. Allowed to fail
